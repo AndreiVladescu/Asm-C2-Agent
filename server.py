@@ -1,7 +1,7 @@
 #!/usr/bin/python
 import socket
 
-def start_server():
+def start_http_server():
     host = '127.0.0.1'  # Localhost
     port = 8080         # Port to bind
 
@@ -12,7 +12,7 @@ def start_server():
     try:
         # Bind the socket to the address and port
         server_socket.bind((host, port))
-        print(f"Server started on {host}:{port}")
+        print(f"HTTP Server started on {host}:{port}")
 
         # Listen for incoming connections
         server_socket.listen(5)  # Allow up to 5 connections in the queue
@@ -23,9 +23,10 @@ def start_server():
             client_socket, client_address = server_socket.accept()
             print(f"Connection established with {client_address}")
 
-            # Send a welcome message to the client
-            welcome_message = b"Hello, client! You are connected.\n"
-            client_socket.send(welcome_message)
+            # Send an HTTP GET command to the agent
+            get_request = b"GET / HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n"
+            client_socket.sendall(get_request)
+            print("Sent HTTP GET request to the agent.")
 
             # Close the client connection
             client_socket.close()
@@ -37,4 +38,4 @@ def start_server():
         server_socket.close()
 
 if __name__ == "__main__":
-    start_server()
+    start_http_server()
