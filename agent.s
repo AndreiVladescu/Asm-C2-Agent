@@ -5,11 +5,14 @@ section .data
     socket_fd dq 0x0
     err_msg db "Program exits due to errors", 0x0
     err_msg_len dq 0x1c
-    http_GET_msg db "GET / HTTP/1.1", 0x0D ,0x0A, 0x0           ; GET message
-    http_GET_msg_len db 0x10                ; Self-explanatory, really
+    http_GET_msg db "GET / HTTP/1.1", 0x0D ,0x0A, 0x0D ,0x0A, 0x0           ; GET message
+    http_GET_msg_len db 0x12                ; Self-explanatory, really
+    ; timespec struct
+    sleep_time dq 0                         ; seconds     
+    sleep_nsec dq 50000000                  ; nanoseconds (50ms)
 
 section .bss
-    rx_buffer resb 0x100                    ; Receiving buffer from the server, 256B max
+    rx_buffer resb 0x400                    ; Receiving buffer from the server, 1KB max
     tx_buffer resb 0x400                    ; Transmitting buffer to the server, 1KB max
 
 section .text
@@ -21,6 +24,7 @@ section .text
     global fn_dbg_print_rx_buffer
     global fn_get_command
     global fn_poll_socket
+    global fn_sleep_ns
 
 ; Function to exit
 fn_error_exit:
@@ -45,7 +49,7 @@ fn_dbg_print_rx_buffer:
     mov rax, 0x1                ; read syscall
     mov rdi, 0x1                ; socket file descriptor
     lea rsi, [rx_buffer]        ; pointer to the buffer
-    mov rdx, 0x100              ; buffer size
+    mov rdx, 0x400              ; buffer size
     syscall
 
     cmp rax, 0                 
@@ -55,6 +59,20 @@ fn_dbg_print_rx_buffer:
     pop rbp
     ret
 
+; Function to sleep to avoid http server being too slow
+fn_sleep_ns:
+    push rbp
+    mov rbp, rsp
+    sub rsp, 0x8                ; Stackframe
+
+    mov rax, 0x23               ; nanosleep syscall
+    lea rdi, [sleep_time]       ; pointer to timespec struct
+    xor rsi, rsi                ; NULL (no remaining time)
+    syscall
+
+    mov rsp, rbp
+    pop rbp
+    ret
 ; Function to poll the socket for reading
 ; Return values:
 ;   rax - number of bytes to be read
@@ -210,6 +228,9 @@ fn_get_command:
     lea rsi, [http_GET_msg]             ; Load address into rsi
     movzx rdx, byte [http_GET_msg_len]  ; Load buffer length into rdx
     call fn_write_socket
+
+    ; Wait for server to process
+    call fn_sleep_ns
 
     ; Poll server for data
     call fn_poll_socket
