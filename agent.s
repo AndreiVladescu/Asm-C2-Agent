@@ -208,7 +208,22 @@ fn_exec_cmd:
     
 .parent_process_branch:
 
-    ; Sleep for 50ms to avoid synchronization problems
+    ; Close write pipe
+    mov rax, 0x3                ; close syscall
+    mov rdi, [pipe_fd+8]
+    syscall
+
+    ; Wait for the child process to terminate
+    ;mov rax, 0x3d                ; wait4 syscall
+    ;xor rdi, rdi                 ; pid = -1 (wait for any child process)
+    ;lea rsi, [child_status]      ; Pointer to store status
+    ;xor rdx, rdx                 ; options = 0 (default behavior)
+    ;xor r10, r10                 ; rusage = NULL (no resource usage info)
+    ;syscall
+
+    ;cmp rax, 0
+    ;jl fn_error_exit             ; Exit if wait4 fails
+
     call fn_sleep_ns
 
     ; Use ioctl to get number of bytes available
@@ -230,6 +245,11 @@ fn_exec_cmd:
     ; Jump to return
     jmp .return
 .child_process_branch:
+
+    ; Close read pipe
+    mov rax, 0x3                ; close syscall
+    mov rdi, [pipe_fd]
+    syscall
 
     ; Use dup2 to redirect STDOUT to pipe
     ; After this call, execve output will be redirected to pipe
@@ -253,9 +273,6 @@ fn_exec_cmd:
     lea rsi, [argv]             ; char *argv
     mov rdx, 0x0                ; char *envp
     syscall
-
-    ; Sleep for 50ms to avoid synchronization problems
-    call fn_sleep_ns
 
     ; Exit cleanly now
     call fn_exit_clean
@@ -539,7 +556,7 @@ _start:
 
     ; Execute command in bash
     call fn_exec_cmd
-    ;call fn_dbg_print_tx_buffer
+    call fn_dbg_print_tx_buffer
     ; Exit the program
     mov rax, 0x3c               ; exit syscall
     mov rdi, 0x0
