@@ -301,15 +301,6 @@ fn_itoa:
     ; Store decimal count
     mov byte [ascii_post_cl_decimal_cnt], cl
 
-    mov rax, 1                  ; syscall: write
-    mov rdi, 1                  ; stdout
-    lea rsi, [ascii_post_cl_number]
-    mov r9, 0x14
-    sub r9b, byte [ascii_post_cl_decimal_cnt]
-    add rsi, r9
-    movzx rdx, byte [ascii_post_cl_decimal_cnt] ; Number of characters
-    syscall
-
     pop r9
     pop rbx
     mov rsp, rbp
@@ -381,11 +372,6 @@ fn_exec_cmd:
 
     mov r9, rax                 ; Save PID
 
-    ; Close write pipe
-    ;mov rax, 0x3                ; close syscall
-    ;mov edi, dword [pipe_fd+4]
-    ;syscall
-
     ; Wait for the child process to terminate
     mov rax, 0x3d               ; wait4 syscall
     mov rdi, r9                 ; pid of child
@@ -413,7 +399,6 @@ fn_exec_cmd:
     call fn_itoa
 
     ; Accomodate POST message
-    ;mov r9, rdx                                     ; Command output length
     add r9b, byte [http_POST_msg_len]               ; Add POST message length to the buffer length
     add r9b, byte [ascii_post_cl_decimal_cnt]       ; Add the number of decimal digits to the buffer length
     add r9, 0x4                                     ; Blank line length
@@ -433,11 +418,6 @@ fn_exec_cmd:
     ; Jump to return
     jmp .return
 .child_process_branch:
-
-    ; Close read pipe
-    ;mov rax, 0x3                ; close syscall
-    ;mov edi, dword [pipe_fd]
-    ;syscall
 
     ; Use dup2 to redirect STDOUT to pipe
     ; After this call, execve output will be redirected to pipe
