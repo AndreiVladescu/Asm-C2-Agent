@@ -8,6 +8,7 @@ This is a proof of concept C2 agent is written for Linux ABI, to demonstrates ho
 
 ### Requirments 
 ` sudo apt update && sudo apt install make nasm -y && \
+pip install flask && \
 git clone https://github.com/AndreiVladescu/Asm-C2-Agent && \
 cd Asm-C2-Agent`
 
